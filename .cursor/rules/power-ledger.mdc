@@ -1,0 +1,23 @@
+---
+alwaysApply: true
+---
+
+This repository implements Power Ledger: a Linux power/event accounting daemon and CLI.
+
+The detailed task prompts live in `.cursor/power_ledger_prompts/`.
+
+Do not treat all prompt files as active at once.
+
+Before editing code:
+- identify which prompt file controls the current task;
+- read `00_master_blueprint.md`;
+- read only the specific agent prompt needed for the current task;
+- summarize the intended files to create or modify;
+- avoid changing unrelated modules.
+
+Implementation rules:
+- prefer small C modules with clear headers;
+- keep daemon core, D-Bus handling, binary log I/O, IPC socket, CLI, tests, and documentation separated;
+- do not invent protocols or binary formats if they are already specified in the prompts;
+- add build/test commands whenever code is changed;
+- never silently weaken Linux-specific behavior into portable fake behavior.
