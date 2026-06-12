@@ -12,6 +12,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "binary_io.h"
+#include "duration_format.h"
+#include "sysfs_poll.h"
+
 #define LEDGER_DEFAULT_PATH "/var/log/power_ledger.bin"
 #define READ_CHUNK_RECORDS  64
 
@@ -22,7 +26,7 @@ struct RiemannResult {
 
 static int is_session_boundary(uint8_t type)
 {
-    return type == (uint8_t)EV_WAKE || type == (uint8_t)EV_UNPLUG;
+    return type == (uint8_t)EV_UNPLUG;
 }
 
 static double segment_delta_seconds(const struct PowerLedgerEvent *left,
@@ -35,6 +39,10 @@ static double segment_delta_seconds(const struct PowerLedgerEvent *left,
     }
 
     if (left->type == (uint8_t)EV_SLEEP || right->type == (uint8_t)EV_WAKE) {
+        return 0.0;
+    }
+
+    if (left->type == (uint8_t)EV_PLUG) {
         return 0.0;
     }
 
@@ -205,7 +213,8 @@ static int scan_session_start_backward(int fd, off_t file_size, int scan_all,
 
         for (i = nread; i-- > 0U;) {
             global_index--;
-            if (is_session_boundary(chunk[i].type)) {
+            if (is_session_boundary(chunk[i].type) &&
+                global_index + 1U < records_in_file) {
                 *out_start_index = global_index;
                 return 0;
             }
@@ -367,6 +376,22 @@ static int run_frozen_clock_self_test(void)
     return 0;
 }
 
+static const char *regime_to_string(uint8_t regime)
+{
+    switch ((power_regime_t)regime) {
+    case REG_PERFORMANCE:
+        return "performance";
+    case REG_BALANCED:
+        return "balanced";
+    case REG_POWER_SAVE:
+        return "power-save";
+    case REG_QUIET:
+        return "quiet";
+    default:
+        return "balanced";
+    }
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr, "Usage: %s [-f ledger_path] [--all] [--self-test]\n", prog);
@@ -376,8 +401,11 @@ int main(int argc, char **argv)
 {
     const char *ledger_path = LEDGER_DEFAULT_PATH;
     struct RiemannResult result;
+    struct BinaryIoDischargeResult discharge;
+    struct PowerLedgerEvent last_event;
     char duration[64];
     double avg_watts;
+    int on_ac_now = 0;
     static const struct option long_opts[] = {
         {"all", no_argument, NULL, 'a'},
         {"self-test", no_argument, NULL, 't'},
@@ -387,7 +415,7 @@ int main(int argc, char **argv)
     int self_test = 0;
     int opt;
 
-    while ((opt = getopt_long(argc, argv, "f:h", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "f:aht", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'f':
             ledger_path = optarg;
@@ -411,9 +439,24 @@ int main(int argc, char **argv)
         return run_frozen_clock_self_test() == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
-    if (analyze_ledger(ledger_path, scan_all, &result) != 0) {
-        perror("bat-time");
-        return EXIT_FAILURE;
+    if (scan_all) {
+        if (analyze_ledger(ledger_path, 1, &result) != 0) {
+            perror("bat-time");
+            return EXIT_FAILURE;
+        }
+    } else {
+        if (binary_io_read_last_event(ledger_path, &last_event) == 0 &&
+            last_event.power_drain >= 0) {
+            on_ac_now = 1;
+        }
+
+        if (binary_io_analyze_discharge(ledger_path, on_ac_now, &discharge) != 0) {
+            perror("bat-time");
+            return EXIT_FAILURE;
+        }
+
+        result.active_seconds = (double)discharge.active_seconds;
+        result.energy_wh = discharge.energy_wh;
     }
 
     format_duration(result.active_seconds, duration, sizeof(duration));
@@ -424,9 +467,31 @@ int main(int argc, char **argv)
         avg_watts = 0.0;
     }
 
+    if (binary_io_read_last_event(ledger_path, &last_event) != 0) {
+        memset(&last_event, 0, sizeof(last_event));
+        last_event.power_regime = (uint8_t)REG_BALANCED;
+    }
+
+    printf("Power Regime           : %s\n", regime_to_string(last_event.power_regime));
     printf("Active Session Runtime : %s\n", duration);
     printf("Net Energy Consumed    : %.2f Wh\n", result.energy_wh);
     printf("Average Session Burn   : %.2fW\n", avg_watts);
+
+    {
+        struct SysfsSample sample;
+        char eta[32];
+
+        if (sysfs_poll_sample(&sample) == 0) {
+            if (sample.remaining_mins >= 0) {
+                duration_format_mins(sample.remaining_mins, eta, sizeof(eta));
+                printf("Remaining              : %s\n", eta);
+            }
+            if (sample.to_full_mins >= 0) {
+                duration_format_mins(sample.to_full_mins, eta, sizeof(eta));
+                printf("To Full                : %s\n", eta);
+            }
+        }
+    }
 
     return EXIT_SUCCESS;
 }

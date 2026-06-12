@@ -10,6 +10,10 @@ Power Ledger reads kernel telemetry through read-only sysfs nodes. The daemon ne
 | Battery power | `/sys/class/power_supply/BAT0/power_now` | — | microwatts (`int32_t`) |
 | Battery status | `/sys/class/power_supply/BAT0/status` | — | `Discharging` negates `power_now` |
 | Battery level | `/sys/class/power_supply/BAT0/capacity` | — | percent 0–100 |
+| Battery energy | `/sys/class/power_supply/BAT0/energy_now` | — | microwatt-hours (µWh) |
+| Battery full energy | `/sys/class/power_supply/BAT0/energy_full` | — | microwatt-hours (µWh) |
+| Time to empty | `/sys/class/power_supply/BAT0/time_to_empty_now` | energy fallback (below) | minutes |
+| Time to full | `/sys/class/power_supply/BAT0/time_to_full_now` | energy fallback (below) | minutes |
 | Fan RPM | `/sys/class/hwmon/hwmonN/fan1_input` | scan `hwmon*/name` | unsigned RPM |
 | Power regime | `/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference` | `/sys/firmware/acpi/platform_profile` | maps to `power_regime_t` |
 
@@ -28,10 +32,36 @@ The cached directory's `fan1_input` file supplies the RPM value written into the
 |---------------|------------------|
 | `performance`, `default` | `REG_PERFORMANCE` (1) |
 | `balanced`, `balance_performance` | `REG_BALANCED` (2) |
-| `power`, `balance_power` | `REG_POWER_SAVE` (3) |
+| `power`, `balance_power`, `power-save` | `REG_POWER_SAVE` (3) |
 | `quiet`, `low-power` | `REG_QUIET` (4) |
 
+Unrecognized strings default to `REG_BALANCED`. The IPC wire format maps `REG_POWER_SAVE` to the string `power-save`.
+
 If neither cpufreq nor platform profile nodes are readable, the daemon records `REG_BALANCED`.
+
+## Battery ETA Estimates
+
+During each `sysfs_poll_sample()` call the daemon also reads AC online state and derives IPC-only ETA fields (not written to the 16-byte ledger):
+
+| IPC field | Populated when |
+|-----------|----------------|
+| `remaining_mins` | AC offline and `BAT0/status` is `Discharging` |
+| `to_full_mins` | AC online and `BAT0/status` is `Charging` |
+
+**Priority chain** for each estimate:
+
+1. Kernel `time_to_empty_now` / `time_to_full_now` (minutes), when present and in range.
+2. Energy fallback using `energy_now`, `energy_full`, and `power_now` (µWh and µW):
+
+   \[
+   \text{remaining\_mins} = \frac{\text{energy\_now}}{|\text{power\_now}|} \times 60
+   \]
+
+   \[
+   \text{to\_full\_mins} = \frac{\text{energy\_full} - \text{energy\_now}}{\text{power\_now}} \times 60
+   \]
+
+Values outside `(0, 7 \times 24 \times 60]` minutes are treated as unavailable (`-1` internally, omitted on the IPC wire).
 
 ## AC Edge Monitoring
 
@@ -52,7 +82,7 @@ Mechanical adapter contacts can generate repeated identical edge notifications w
 When compiled with `-DTEST_MODE` (`make test`), absolute `/sys/...` paths are rewritten to `./mock_sys/...` by stripping the `/sys/` prefix. The harness in `tests/hardware_mock.c` seeds a minimal tree:
 
 ```
-mock_sys/class/power_supply/BAT0/{power_now,status,capacity}
+mock_sys/class/power_supply/BAT0/{power_now,status,capacity,energy_now,energy_full}
 mock_sys/class/power_supply/AC0/online
 mock_sys/class/hwmon/hwmon0/{name,fan1_input}
 mock_sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference

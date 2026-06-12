@@ -4,7 +4,7 @@ CFLAGS   := -std=c11 -Wall -Wextra -Wpedantic -Werror \
             -O2 -fno-plt -g \
             -Isrc/shared -Isrc/daemon -Itests
 TEST_CFLAGS := $(CFLAGS) -DTEST_MODE
-LDFLAGS  :=
+LDFLAGS  := -pthread
 DBUS_FLAGS := $(shell pkg-config --cflags --libs dbus-1 2>/dev/null)
 
 BIN_DIR      := bin
@@ -17,13 +17,15 @@ IPC_STRESS   := $(BIN_DIR)/ipc_stress
 SEED_MOCK    := $(BIN_DIR)/seed_mock
 
 DAEMON_OBJS := src/daemon/main.o src/daemon/sysfs_poll.o src/daemon/binary_io.o \
-               src/daemon/dbus_handler.o src/daemon/ipc_socket.o
+               src/daemon/dbus_handler.o src/daemon/ipc_socket.o src/shared/duration_format.o
 DAEMON_TEST_OBJS := src/daemon/main_test.o tests/sysfs_poll_test.o \
                     src/daemon/binary_io_test.o src/daemon/dbus_handler_test.o \
-                    src/daemon/ipc_socket_test.o
-CLIENT_OBJS := src/client/bat_time.o
+                    src/daemon/ipc_socket_test.o src/shared/duration_format.o
+CLIENT_OBJS := src/client/bat_time.o src/daemon/binary_io.o \
+               src/daemon/sysfs_poll.o src/shared/duration_format.o
 TEST_OBJS := tests/runner.o tests/hardware_mock.o tests/sysfs_poll_test.o \
-             src/daemon/binary_io_test.o
+             src/daemon/binary_io_test.o src/daemon/ipc_socket_test.o \
+             src/shared/duration_format.o
 LAYOUT_OBJS := tests/layout_test.o src/daemon/binary_io.o
 
 VALGRIND := $(shell command -v valgrind 2>/dev/null)
@@ -115,12 +117,17 @@ src/daemon/main_test.o: src/daemon/main.c src/daemon/binary_io.h src/daemon/dbus
 	$(CC) $(TEST_CFLAGS) -c -o $@ src/daemon/main.c
 
 src/daemon/ipc_socket.o: src/daemon/ipc_socket.c src/daemon/ipc_socket.h \
-                         src/shared/ledger_format.h
+                         src/daemon/binary_io.h src/daemon/sysfs_poll.h \
+                         src/shared/duration_format.h src/shared/ledger_format.h
 	$(CC) $(CFLAGS) -c -o $@ src/daemon/ipc_socket.c
 
 src/daemon/ipc_socket_test.o: src/daemon/ipc_socket.c src/daemon/ipc_socket.h \
-                              src/shared/ledger_format.h
+                              src/daemon/binary_io.h src/daemon/sysfs_poll.h \
+                              src/shared/duration_format.h src/shared/ledger_format.h
 	$(CC) $(TEST_CFLAGS) -c -o $@ src/daemon/ipc_socket.c
+
+src/shared/duration_format.o: src/shared/duration_format.c src/shared/duration_format.h
+	$(CC) $(CFLAGS) -c -o $@ src/shared/duration_format.c
 
 src/client/bat_time.o: src/client/bat_time.c src/shared/ledger_format.h
 	$(CC) $(CFLAGS) -Isrc/shared -c -o $@ src/client/bat_time.c
@@ -154,7 +161,8 @@ tests/layout_test.o: tests/layout_test.c src/daemon/binary_io.h src/shared/ledge
 	$(CC) $(CFLAGS) -c -o $@ tests/layout_test.c
 
 tests/runner.o: tests/runner.c tests/hardware_mock.h src/daemon/binary_io.h \
-                src/daemon/sysfs_poll.h src/shared/ledger_format.h
+                src/daemon/ipc_socket.h src/daemon/sysfs_poll.h \
+                src/shared/duration_format.h src/shared/ledger_format.h
 	$(CC) $(TEST_CFLAGS) -c -o $@ tests/runner.c
 
 tests/hardware_mock.o: tests/hardware_mock.c tests/hardware_mock.h

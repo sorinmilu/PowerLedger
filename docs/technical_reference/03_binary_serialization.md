@@ -32,7 +32,7 @@ Total record size: **16 bytes**.
 |-------|-------------------|------------------------|
 | 1     | `REG_PERFORMANCE` | `performance`, `default` |
 | 2     | `REG_BALANCED`    | `balanced`, `balance_performance` |
-| 3     | `REG_POWER_SAVE`  | `power`, `balance_power` |
+| 3     | `REG_POWER_SAVE`  | `power`, `balance_power`, `power-save` |
 | 4     | `REG_QUIET`       | `quiet`, `low-power` |
 
 ## Structure Definition
@@ -59,6 +59,15 @@ Compile-time enforcement: `_Static_assert(sizeof(struct PowerLedgerEvent) == 16,
 - **Write contract:** Each append must write exactly 16 bytes. Partial writes are treated as structural failure.
 - **Durability:** After every successful write, `fdatasync()` flushes data to stable storage to survive abrupt power loss.
 - **Format:** Pure binary array of sequential records. No JSON, no newline-terminated text, no file header.
+
+## IPC and CLI Consumers
+
+The ledger file is read by:
+
+- `bat-time` — full-file or discharge-window Riemann integration (see `05_riemann_math.md`)
+- Daemon IPC — `session_mins` only, on each `0x4A` / `0x4B` / `0x51` / `0x52` query (see `04_ipc_json_protocol.md`)
+
+Live sysfs snapshots in IPC responses are not re-read from the ledger; only integrated runtime minutes are derived from on-disk records.
 
 ## Validation
 

@@ -20,7 +20,6 @@ enum {
     FD_KIND_TIMER = 1,
     FD_KIND_AC = 2,
     FD_KIND_DBUS = 3,
-    FD_KIND_IPC = 4,
 };
 
 static volatile sig_atomic_t g_stop_requested;
@@ -123,7 +122,7 @@ static int log_event(BinaryIo *io, IpcSocket *ipc, ledger_event_t type)
     }
 
     if (ipc != NULL) {
-        ipc_socket_update_cache(ipc, &event);
+        ipc_socket_update_cache(ipc, &event, &sample, 1);
     }
 
     return 0;
@@ -131,19 +130,11 @@ static int log_event(BinaryIo *io, IpcSocket *ipc, ledger_event_t type)
 
 static void seed_ipc_cache(IpcSocket *ipc)
 {
-    struct SysfsSample sample;
-    struct PowerLedgerEvent event;
-
     if (ipc == NULL) {
         return;
     }
 
-    if (sysfs_poll_sample(&sample) != 0) {
-        return;
-    }
-
-    sysfs_poll_build_event(EV_TICK, &sample, &event);
-    ipc_socket_update_cache(ipc, &event);
+    (void)ipc_socket_refresh_live(ipc);
 }
 
 static void handle_timer(BinaryIo *io, IpcSocket *ipc, int tfd)
@@ -181,13 +172,6 @@ static void handle_ac(BinaryIo *io, IpcSocket *ipc, int ac_fd)
 
     if (log_event(io, ipc, ev) != 0) {
         perror("log_event AC");
-    }
-}
-
-static void handle_ipc(IpcSocket *ipc)
-{
-    if (ipc_socket_dispatch(ipc) != 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-        perror("ipc_socket_dispatch");
     }
 }
 
@@ -287,14 +271,8 @@ int main(int argc, char **argv)
 #endif
 
     if (ipc_socket_init(&ipc) == 0) {
-        int listen_fd = ipc_socket_get_listen_fd(ipc);
-
+        ipc_socket_restore_session(ipc, ledger_path);
         seed_ipc_cache(ipc);
-        if (listen_fd < 0 || add_epoll_fd(epfd, listen_fd, FD_KIND_IPC) != 0) {
-            perror("epoll_ctl IPC");
-            ipc_socket_shutdown(ipc, epfd);
-            ipc = NULL;
-        }
     } else {
         fprintf(stderr, "warning: IPC socket disabled (%s)\n", strerror(errno));
     }
@@ -318,7 +296,9 @@ int main(int argc, char **argv)
         }
 
         for (i = 0; i < nready; i++) {
-            switch (events[i].data.u32) {
+            uint32_t tag = events[i].data.u32;
+
+            switch (tag) {
             case FD_KIND_TIMER:
                 handle_timer(io, ipc, tfd);
                 break;
@@ -328,11 +308,6 @@ int main(int argc, char **argv)
             case FD_KIND_DBUS:
                 if (dbus != NULL) {
                     handle_dbus(dbus, io, ipc);
-                }
-                break;
-            case FD_KIND_IPC:
-                if (ipc != NULL) {
-                    handle_ipc(ipc);
                 }
                 break;
             default:

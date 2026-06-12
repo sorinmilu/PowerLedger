@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #define HWMON_SCAN_MAX 32
+#define ETA_MAX_MINS (7L * 24L * 60L)
 
 static uint64_t last_ac_event_us;
 static ledger_event_t last_ac_event_type;
@@ -124,7 +125,8 @@ static uint8_t map_power_regime(const char *text)
     if (strcmp(text, "balanced") == 0 || strcmp(text, "balance_performance") == 0) {
         return (uint8_t)REG_BALANCED;
     }
-    if (strcmp(text, "power") == 0 || strcmp(text, "balance_power") == 0) {
+    if (strcmp(text, "power") == 0 || strcmp(text, "balance_power") == 0 ||
+        strcmp(text, "power-save") == 0) {
         return (uint8_t)REG_POWER_SAVE;
     }
     if (strcmp(text, "quiet") == 0 || strcmp(text, "low-power") == 0) {
@@ -230,6 +232,134 @@ static int read_battery_power(int32_t *out)
 
     *out = (int32_t)power_uw;
     return 0;
+}
+
+static int read_ac_online_sysfs(uint8_t *out)
+{
+    static const char *const ac_paths[] = {
+        "/sys/class/power_supply/AC0/online",
+        "/sys/class/power_supply/ADP1/online",
+        NULL,
+    };
+    long value;
+    size_t i;
+
+    if (out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    for (i = 0; ac_paths[i] != NULL; i++) {
+        if (parse_sysfs_int(ac_paths[i], &value) == 0) {
+            *out = (value != 0) ? 1U : 0U;
+            return 0;
+        }
+    }
+
+    *out = 0U;
+    return 0;
+}
+
+static int eta_mins_valid(long mins)
+{
+    return mins > 0L && mins <= ETA_MAX_MINS;
+}
+
+static int read_time_to_empty_mins(long *out_mins)
+{
+    long energy_now;
+    long power_uw;
+
+    if (out_mins == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (parse_sysfs_int("/sys/class/power_supply/BAT0/time_to_empty_now", out_mins) == 0 &&
+        eta_mins_valid(*out_mins)) {
+        return 0;
+    }
+
+    if (parse_sysfs_int("/sys/class/power_supply/BAT0/energy_now", &energy_now) != 0) {
+        return -1;
+    }
+    if (parse_sysfs_int("/sys/class/power_supply/BAT0/power_now", &power_uw) != 0 ||
+        power_uw <= 0L) {
+        return -1;
+    }
+
+    *out_mins = (long)((double)energy_now / (double)power_uw * 60.0);
+    if (!eta_mins_valid(*out_mins)) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int read_time_to_full_mins(long *out_mins)
+{
+    long energy_now;
+    long energy_full;
+    long power_uw;
+
+    if (out_mins == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (parse_sysfs_int("/sys/class/power_supply/BAT0/time_to_full_now", out_mins) == 0 &&
+        eta_mins_valid(*out_mins)) {
+        return 0;
+    }
+
+    if (parse_sysfs_int("/sys/class/power_supply/BAT0/energy_now", &energy_now) != 0 ||
+        parse_sysfs_int("/sys/class/power_supply/BAT0/energy_full", &energy_full) != 0) {
+        return -1;
+    }
+    if (parse_sysfs_int("/sys/class/power_supply/BAT0/power_now", &power_uw) != 0 ||
+        power_uw <= 0L) {
+        return -1;
+    }
+    if (energy_full <= energy_now) {
+        return -1;
+    }
+
+    *out_mins = (long)((double)(energy_full - energy_now) / (double)power_uw * 60.0);
+    if (!eta_mins_valid(*out_mins)) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static void populate_battery_etas(struct SysfsSample *sample)
+{
+    char status[32];
+    long eta_mins;
+
+    if (sample == NULL) {
+        return;
+    }
+
+    sample->remaining_mins = SYSFS_ETA_NA;
+    sample->to_full_mins = SYSFS_ETA_NA;
+
+    if (read_sysfs_text("/sys/class/power_supply/BAT0/status", status, sizeof(status)) != 0) {
+        status[0] = '\0';
+    }
+
+    if (!sample->ac_online &&
+        (strcmp(status, "Discharging") == 0 || sample->power_drain < 0)) {
+        if (read_time_to_empty_mins(&eta_mins) == 0) {
+            sample->remaining_mins = (int32_t)eta_mins;
+        }
+    }
+
+    if (sample->ac_online && strcmp(status, "Charging") == 0) {
+        if (read_time_to_full_mins(&eta_mins) == 0) {
+            sample->to_full_mins = (int32_t)eta_mins;
+        }
+    }
 }
 
 static int read_battery_level(uint8_t *out)
@@ -366,6 +496,8 @@ int sysfs_poll_sample(struct SysfsSample *out)
     }
 
     memset(out, 0, sizeof(*out));
+    out->remaining_mins = SYSFS_ETA_NA;
+    out->to_full_mins = SYSFS_ETA_NA;
     out->timestamp = monotonic_raw_seconds();
 
     if (read_battery_power(&out->power_drain) != 0) {
@@ -375,6 +507,8 @@ int sysfs_poll_sample(struct SysfsSample *out)
     (void)read_battery_level(&out->battery_level);
     (void)read_fan_speed(&out->fan_speed);
     (void)read_power_regime(&out->power_regime);
+    (void)read_ac_online_sysfs(&out->ac_online);
+    populate_battery_etas(out);
     return 0;
 }
 

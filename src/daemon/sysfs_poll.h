@@ -3,11 +3,16 @@
 
 #include "ledger_format.h"
 
+#define SYSFS_ETA_NA (-1)
+
 struct SysfsSample {
     int32_t power_drain;
     uint16_t fan_speed;
     uint8_t battery_level;
     uint8_t power_regime;
+    uint8_t ac_online;
+    int32_t remaining_mins;
+    int32_t to_full_mins;
     uint32_t timestamp;
 };
 

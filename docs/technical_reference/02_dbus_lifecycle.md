@@ -23,7 +23,7 @@ type='signal',sender='org.freedesktop.login1',interface='org.freedesktop.login1.
 | `true` | `EV_SLEEP` (3) | Immediately before the process scheduler freezes |
 | `false` | `EV_WAKE` (4) | As soon as userspace resumes after suspend |
 
-Each lifecycle record is a full 16-byte `PowerLedgerEvent` built from a fresh `sysfs_poll_sample()` snapshot (battery power, level, fan RPM, power regime, monotonic timestamp).
+Each lifecycle record is a full 16-byte `PowerLedgerEvent` built from a fresh `sysfs_poll_sample()` snapshot (battery power, level, fan RPM, power regime, monotonic timestamp). `EV_SLEEP` / `EV_WAKE` pairs create zero-duration segments during later Riemann integration so suspend time is excluded from `session_mins` and `bat-time` output.
 
 ## Epoll Integration
 

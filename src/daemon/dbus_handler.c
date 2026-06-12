@@ -45,7 +45,7 @@ static int log_lifecycle_event(BinaryIo *io, IpcSocket *ipc, ledger_event_t type
     }
 
     if (ipc != NULL) {
-        ipc_socket_update_cache(ipc, &event);
+        ipc_socket_update_cache(ipc, &event, &sample, 1);
     }
 
     return 0;
