@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "dbus_handler.h"
+#include "ipc_socket.h"
 #include "sysfs_poll.h"
 
 #include <dbus/dbus.h>
@@ -21,9 +22,10 @@ struct DbusHandler {
     DBusConnection *conn;
     int fd;
     BinaryIo *pending_io;
+    IpcSocket *pending_ipc;
 };
 
-static int log_lifecycle_event(BinaryIo *io, ledger_event_t type)
+static int log_lifecycle_event(BinaryIo *io, IpcSocket *ipc, ledger_event_t type)
 {
     struct SysfsSample sample;
     struct PowerLedgerEvent event;
@@ -38,7 +40,15 @@ static int log_lifecycle_event(BinaryIo *io, ledger_event_t type)
     }
 
     sysfs_poll_build_event(type, &sample, &event);
-    return binary_io_append(io, &event);
+    if (binary_io_append(io, &event) != 0) {
+        return -1;
+    }
+
+    if (ipc != NULL) {
+        ipc_socket_update_cache(ipc, &event);
+    }
+
+    return 0;
 }
 
 static DBusHandlerResult prepare_for_sleep_filter(DBusConnection *conn,
@@ -65,10 +75,10 @@ static DBusHandlerResult prepare_for_sleep_filter(DBusConnection *conn,
     }
 
     if (sleeping) {
-        if (log_lifecycle_event(handler->pending_io, EV_SLEEP) != 0) {
+        if (log_lifecycle_event(handler->pending_io, handler->pending_ipc, EV_SLEEP) != 0) {
             perror("dbus_handler EV_SLEEP");
         }
-    } else if (log_lifecycle_event(handler->pending_io, EV_WAKE) != 0) {
+    } else if (log_lifecycle_event(handler->pending_io, handler->pending_ipc, EV_WAKE) != 0) {
         perror("dbus_handler EV_WAKE");
     }
 
@@ -165,7 +175,7 @@ int dbus_handler_get_fd(const DbusHandler *handler)
     return handler->fd;
 }
 
-int dbus_handler_dispatch(DbusHandler *handler, BinaryIo *io)
+int dbus_handler_dispatch(DbusHandler *handler, BinaryIo *io, IpcSocket *ipc)
 {
     if (handler == NULL || handler->conn == NULL || io == NULL) {
         errno = EINVAL;
@@ -173,10 +183,12 @@ int dbus_handler_dispatch(DbusHandler *handler, BinaryIo *io)
     }
 
     handler->pending_io = io;
+    handler->pending_ipc = ipc;
     while (dbus_connection_read_write_dispatch(handler->conn, 0)) {
         /* drain all pending dbus traffic without blocking */
     }
     handler->pending_io = NULL;
+    handler->pending_ipc = NULL;
     return 0;
 }
 

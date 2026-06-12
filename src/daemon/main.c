@@ -3,10 +3,12 @@
 
 #include "binary_io.h"
 #include "dbus_handler.h"
+#include "ipc_socket.h"
 #include "sysfs_poll.h"
 
 #include <errno.h>
 #include <getopt.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,11 +20,38 @@ enum {
     FD_KIND_TIMER = 1,
     FD_KIND_AC = 2,
     FD_KIND_DBUS = 3,
+    FD_KIND_IPC = 4,
 };
+
+static volatile sig_atomic_t g_stop_requested;
 
 static void usage(const char *prog)
 {
     fprintf(stderr, "Usage: %s [-f ledger_path]\n", prog);
+}
+
+static void on_signal(int signo)
+{
+    (void)signo;
+    g_stop_requested = 1;
+}
+
+static int install_signal_handlers(void)
+{
+    struct sigaction sa;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_signal;
+    sigemptyset(&sa.sa_mask);
+
+    if (sigaction(SIGINT, &sa, NULL) != 0) {
+        return -1;
+    }
+    if (sigaction(SIGTERM, &sa, NULL) != 0) {
+        return -1;
+    }
+
+    return 0;
 }
 
 static int add_epoll_fd(int epfd, int fd, int kind)
@@ -77,7 +106,7 @@ static void drain_fd(int fd)
     } while (nread > 0);
 }
 
-static int log_event(BinaryIo *io, ledger_event_t type)
+static int log_event(BinaryIo *io, IpcSocket *ipc, ledger_event_t type)
 {
     struct SysfsSample sample;
     struct PowerLedgerEvent event;
@@ -87,25 +116,50 @@ static int log_event(BinaryIo *io, ledger_event_t type)
     }
 
     sysfs_poll_build_event(type, &sample, &event);
-    return binary_io_append(io, &event);
+    if (binary_io_append(io, &event) != 0) {
+        return -1;
+    }
+
+    if (ipc != NULL) {
+        ipc_socket_update_cache(ipc, &event);
+    }
+
+    return 0;
 }
 
-static void handle_timer(BinaryIo *io, int tfd)
+static void seed_ipc_cache(IpcSocket *ipc)
+{
+    struct SysfsSample sample;
+    struct PowerLedgerEvent event;
+
+    if (ipc == NULL) {
+        return;
+    }
+
+    if (sysfs_poll_sample(&sample) != 0) {
+        return;
+    }
+
+    sysfs_poll_build_event(EV_TICK, &sample, &event);
+    ipc_socket_update_cache(ipc, &event);
+}
+
+static void handle_timer(BinaryIo *io, IpcSocket *ipc, int tfd)
 {
     drain_fd(tfd);
-    if (log_event(io, EV_TICK) != 0) {
+    if (log_event(io, ipc, EV_TICK) != 0) {
         perror("log_event EV_TICK");
     }
 }
 
-static void handle_dbus(DbusHandler *dbus, BinaryIo *io)
+static void handle_dbus(DbusHandler *dbus, BinaryIo *io, IpcSocket *ipc)
 {
-    if (dbus_handler_dispatch(dbus, io) != 0) {
+    if (dbus_handler_dispatch(dbus, io, ipc) != 0) {
         perror("dbus_handler_dispatch");
     }
 }
 
-static void handle_ac(BinaryIo *io, int ac_fd)
+static void handle_ac(BinaryIo *io, IpcSocket *ipc, int ac_fd)
 {
     int online;
     ledger_event_t ev;
@@ -123,8 +177,15 @@ static void handle_ac(BinaryIo *io, int ac_fd)
         return;
     }
 
-    if (log_event(io, ev) != 0) {
+    if (log_event(io, ipc, ev) != 0) {
         perror("log_event AC");
+    }
+}
+
+static void handle_ipc(IpcSocket *ipc)
+{
+    if (ipc_socket_dispatch(ipc) != 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+        perror("ipc_socket_dispatch");
     }
 }
 
@@ -133,6 +194,7 @@ int main(int argc, char **argv)
     const char *ledger_path = NULL;
     BinaryIo *io = NULL;
     DbusHandler *dbus = NULL;
+    IpcSocket *ipc = NULL;
     int epfd = -1;
     int tfd = -1;
     int ac_fd = -1;
@@ -152,6 +214,11 @@ int main(int argc, char **argv)
             usage(argv[0]);
             return EXIT_FAILURE;
         }
+    }
+
+    if (install_signal_handlers() != 0) {
+        perror("install_signal_handlers");
+        return EXIT_FAILURE;
     }
 
     if (binary_io_open(&io, ledger_path) != 0) {
@@ -204,10 +271,27 @@ int main(int argc, char **argv)
         fprintf(stderr, "warning: D-Bus sleep tracking disabled\n");
     }
 
+    if (ipc_socket_init(&ipc) == 0) {
+        int listen_fd = ipc_socket_get_listen_fd(ipc);
+
+        seed_ipc_cache(ipc);
+        if (listen_fd < 0 || add_epoll_fd(epfd, listen_fd, FD_KIND_IPC) != 0) {
+            perror("epoll_ctl IPC");
+            ipc_socket_shutdown(ipc, epfd);
+            ipc = NULL;
+        }
+    } else {
+        fprintf(stderr, "warning: IPC socket disabled (%s)\n", strerror(errno));
+    }
+
     while (running) {
         struct epoll_event events[8];
         int nready;
         int i;
+
+        if (g_stop_requested) {
+            break;
+        }
 
         nready = epoll_wait(epfd, events, 8, -1);
         if (nready < 0) {
@@ -221,20 +305,30 @@ int main(int argc, char **argv)
         for (i = 0; i < nready; i++) {
             switch (events[i].data.u32) {
             case FD_KIND_TIMER:
-                handle_timer(io, tfd);
+                handle_timer(io, ipc, tfd);
                 break;
             case FD_KIND_AC:
-                handle_ac(io, ac_fd);
+                handle_ac(io, ipc, ac_fd);
                 break;
             case FD_KIND_DBUS:
                 if (dbus != NULL) {
-                    handle_dbus(dbus, io);
+                    handle_dbus(dbus, io, ipc);
+                }
+                break;
+            case FD_KIND_IPC:
+                if (ipc != NULL) {
+                    handle_ipc(ipc);
                 }
                 break;
             default:
                 break;
             }
         }
+    }
+
+    if (ipc != NULL) {
+        ipc_socket_shutdown(ipc, epfd);
+        ipc = NULL;
     }
 
     if (dbus != NULL) {
@@ -245,5 +339,5 @@ int main(int argc, char **argv)
     (void)close(ac_fd);
     (void)close(tfd);
     (void)close(epfd);
-    return EXIT_FAILURE;
+    return EXIT_SUCCESS;
 }
