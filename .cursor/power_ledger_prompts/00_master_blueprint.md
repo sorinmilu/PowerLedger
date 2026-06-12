@@ -86,9 +86,44 @@ When implementing, modifying, or debugging a specific layer of the system, Curso
 
 # 4. Multi-Phase Atomic Commit Workflow
 
-- Agents must execute the implementation sequentially, running verification routines and checking off git milestones before proceeding to the next sub-prompt phase:
-- Phase 1 (Data Layer): Read 03_binary_io_agent.md. Implement ledger_format.h. Commit milestone: feat(ledger): implement packed structural specifications and verify file append layout.
-- Phase 2 (Multiplexer Layer): Read 01_daemon_core_agent.md. Initialize epoll engine core and read sysfs nodes. Commit milestone: feat(daemon): initialize epoll event multiplexer core and hook hardware sysfs interfaces.
-- Phase 3 (Signal Layer): Read 02_dbus_signals_agent.md. Implement D-Bus event trapping loops. Commit milestone: feat(signals): implement dbus system suspend listeners for pre/post sleep milestones.
-- Phase 4 (IPC & Math Layer): Read 04_ipc_socket_agent.md and 05_cli_client_agent.md. Complete UNIX domain socket outputs and parser computations. Commit milestone: feat(ipc): complete riemann calculation tool and unix domain socket interface loops.
+The project implementation is structured into sequential development milestones. Each phase requires completing the corresponding functional code and verifying documentation blocks before proceeding to the next layer:
 
+## Phase 1: Environment & Serialization Core (Data Layer)
+
+Target Guidelines: 03_binary_io_agent.md, 07_build_toolchain_agent.md, and 08_documentation_agent.md
+
+Execution: Create the centralized compilation Makefile and initialize src/shared/ledger_format.h to enforce precise byte-aligned memory layouts. Generate the foundation file docs/technical_reference/03_binary_serialization.md.
+
+Commit Milestone: git commit -m "build(infra): implement strict C11 toolchain matrix and packed binary ledger structures"
+
+## Phase 2: Multiplexer Core & Simulation Sandbox (Multiplexer Layer)
+
+Target Guidelines: 01_daemon_core_agent.md, 06_test_harness_agent.md, and 08_documentation_agent.md
+
+Execution: Initialize the main epoll_create1 and timerfd asynchronous event infrastructure. Hook the low-level /sys/class/ hardware monitoring lookups. Implement the compile-time -DTEST_MODE user-space override path and generate docs/technical_reference/01_hardware_sysfs.md.
+
+Commit Milestone: git commit -m "feat(daemon): initialize epoll multiplexer core and mount virtual hardware simulation sandbox"
+
+## Phase 3: D-Bus Lifecycle Management (Signal Layer)
+
+Target Guidelines: 02_dbus_signals_agent.md and 08_documentation_agent.md
+
+Execution: Integrate the non-blocking libdbus wire connection into the core epoll listener ring. Trap the active PrepareForSleep boolean state transitions to handle EV_SLEEP and EV_WAKE sequences cleanly. Generate docs/technical_reference/02_dbus_lifecycle.md.
+
+Commit Milestone: git commit -m "feat(signals): integrate native systemd-logind dbus suspend and resume traps"
+
+## Phase 4: IPC Interface & Numerical Analytics (IPC & Math Layer)
+
+Target Guidelines: 04_ipc_socket_agent.md, 05_cli_client_agent.md, and 08_documentation_agent.md
+
+Execution: Open the non-blocking UNIX domain socket server at /run/power_ledger.sock handling 0x51 ASCII and 0x4A minified JSON streams. Write the standalone bat-time consumer utility utilizing Piecewise Left-Hand Riemann Sum logic to prune sleep gaps. Generate docs/technical_reference/04_ipc_json_protocol.md and docs/technical_reference/05_riemann_math.md.
+
+Commit Milestone: git commit -m "feat(ipc): complete riemann calculus analytics tool and non-blocking unix socket json stream"
+
+## Phase 5: Quality Assurance, Security, & Deployment (Verification Layer)
+
+Target Guidelines: 06_test_harness_agent.md and 08_documentation_agent.md
+
+Execution: Run the final assertion suites to verify the 3000ms hardware debounce jitter trap and the frozen sleep math clock rules. Profile the daemon under valgrind across 50 simulated socket connections to guarantee a 0-byte memory leak footprint. Compile the definitive user-facing deployment guide at docs/user_manual.md containing the native systemd unit configuration file.
+
+Commit Milestone: git commit -m "test(ci): run end-to-end sandbox regression tests and ship systemd service configurations"
