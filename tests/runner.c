@@ -8,13 +8,17 @@
 #include "sysfs_poll.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define TEST_LEDGER_PATH "tmp/test_runner_ledger.bin"
+#define TEST_LEDGER_PATH        "tmp/test_runner_ledger.bin"
+#define TEST_RIEMANN_PATH       "tmp/test_riemann_zero.bin"
+#define BAT_TIME_BIN            "./bin/bat-time"
+#define FOUR_HOURS_SECONDS      (4U * 3600U)
 
 static int count_ledger_events(const char *path, size_t *out_count)
 {
@@ -157,6 +161,83 @@ static int test_mock_sample(void)
     return 0;
 }
 
+static int test_riemann_zero_volume(void)
+{
+    BinaryIo *io = NULL;
+    struct PowerLedgerEvent events[2];
+    FILE *fp;
+    char line[256];
+    double energy_wh = -1.0;
+    const int32_t load_uw = -15000000;
+    const uint32_t base_ts = 1000U;
+
+    if (mkdir("tmp", 0700) != 0 && errno != EEXIST) {
+        perror("mkdir tmp");
+        return -1;
+    }
+
+    if (unlink(TEST_RIEMANN_PATH) != 0 && errno != ENOENT) {
+        perror("unlink TEST_RIEMANN_PATH");
+        return -1;
+    }
+
+    memset(events, 0, sizeof(events));
+
+    events[0].type = (uint8_t)EV_SLEEP;
+    events[0].power_drain = load_uw;
+    events[0].timestamp = base_ts;
+
+    events[1].type = (uint8_t)EV_TICK;
+    events[1].power_drain = load_uw;
+    events[1].timestamp = base_ts + FOUR_HOURS_SECONDS;
+
+    if (binary_io_open(&io, TEST_RIEMANN_PATH) != 0) {
+        perror("binary_io_open riemann");
+        return -1;
+    }
+
+    if (binary_io_append(io, &events[0]) != 0 || binary_io_append(io, &events[1]) != 0) {
+        perror("binary_io_append riemann");
+        binary_io_close(io);
+        return -1;
+    }
+
+    binary_io_close(io);
+    io = NULL;
+
+    fp = popen(BAT_TIME_BIN " -f " TEST_RIEMANN_PATH " --all 2>&1", "r");
+    if (fp == NULL) {
+        perror("popen bat-time");
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        if (sscanf(line, "Net Energy Consumed    : %lf Wh", &energy_wh) == 1) {
+            break;
+        }
+    }
+
+    if (pclose(fp) == -1) {
+        perror("pclose bat-time");
+        return -1;
+    }
+
+    if (energy_wh < 0.0) {
+        fprintf(stderr, "riemann zero-volume test failed: bat-time output missing energy line\n");
+        return -1;
+    }
+
+    if (fabs(energy_wh) > 0.005) {
+        fprintf(stderr,
+                "riemann zero-volume test failed: expected 0.00 Wh, got %.4f\n",
+                energy_wh);
+        return -1;
+    }
+
+    printf("riemann zero-volume test passed: %.2f Wh over 4h EV_SLEEP gap\n", energy_wh);
+    return 0;
+}
+
 int main(void)
 {
     int rc = EXIT_SUCCESS;
@@ -166,6 +247,10 @@ int main(void)
     }
 
     if (test_debounce() != 0) {
+        rc = EXIT_FAILURE;
+    }
+
+    if (test_riemann_zero_volume() != 0) {
         rc = EXIT_FAILURE;
     }
 

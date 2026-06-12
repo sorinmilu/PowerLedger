@@ -63,7 +63,9 @@ static int add_epoll_fd(int epfd, int fd, int kind)
     ev.data.u32 = (uint32_t)kind;
 
     if (kind == FD_KIND_AC) {
+#ifndef TEST_MODE
         ev.events |= EPOLLET;
+#endif
     }
 
     return epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
@@ -243,22 +245,31 @@ int main(int argc, char **argv)
 
     ac_fd = sysfs_poll_open_ac_fd();
     if (ac_fd < 0) {
+#ifdef TEST_MODE
+        fprintf(stderr, "warning: AC telemetry disabled\n");
+#else
         perror("sysfs_poll_open_ac_fd");
         binary_io_close(io);
         (void)close(tfd);
         (void)close(epfd);
         return EXIT_FAILURE;
-    }
-
-    if (add_epoll_fd(epfd, ac_fd, FD_KIND_AC) != 0) {
+#endif
+    } else if (add_epoll_fd(epfd, ac_fd, FD_KIND_AC) != 0) {
+#ifdef TEST_MODE
+        fprintf(stderr, "warning: AC epoll disabled (mock sysfs)\n");
+        (void)close(ac_fd);
+        ac_fd = -1;
+#else
         perror("epoll_ctl AC");
         binary_io_close(io);
         (void)close(ac_fd);
         (void)close(tfd);
         (void)close(epfd);
         return EXIT_FAILURE;
+#endif
     }
 
+#ifndef TEST_MODE
     if (dbus_handler_init(&dbus) == 0) {
         dbus_fd = dbus_handler_get_fd(dbus);
         if (dbus_fd < 0 || add_epoll_fd(epfd, dbus_fd, FD_KIND_DBUS) != 0) {
@@ -270,6 +281,10 @@ int main(int argc, char **argv)
     } else {
         fprintf(stderr, "warning: D-Bus sleep tracking disabled\n");
     }
+#else
+    fprintf(stderr, "warning: D-Bus sleep tracking disabled (TEST_MODE)\n");
+    (void)dbus_fd;
+#endif
 
     if (ipc_socket_init(&ipc) == 0) {
         int listen_fd = ipc_socket_get_listen_fd(ipc);
@@ -336,7 +351,9 @@ int main(int argc, char **argv)
     }
 
     binary_io_close(io);
-    (void)close(ac_fd);
+    if (ac_fd >= 0) {
+        (void)close(ac_fd);
+    }
     (void)close(tfd);
     (void)close(epfd);
     return EXIT_SUCCESS;
