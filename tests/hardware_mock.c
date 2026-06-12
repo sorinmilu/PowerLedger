@@ -103,7 +103,7 @@ int hardware_mock_set_ac_online(int online)
 
 void hardware_mock_cleanup(void)
 {
-    (void)system("rm -rf mock_sys tmp/test_runner_ledger.bin");
+    (void)system("rm -rf mock_sys tmp");
 }
 
 #endif /* TEST_MODE */
