@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "binary_io.h"
+#include "dbus_handler.h"
 #include "sysfs_poll.h"
 
 #include <errno.h>
@@ -16,6 +17,7 @@
 enum {
     FD_KIND_TIMER = 1,
     FD_KIND_AC = 2,
+    FD_KIND_DBUS = 3,
 };
 
 static void usage(const char *prog)
@@ -96,6 +98,13 @@ static void handle_timer(BinaryIo *io, int tfd)
     }
 }
 
+static void handle_dbus(DbusHandler *dbus, BinaryIo *io)
+{
+    if (dbus_handler_dispatch(dbus, io) != 0) {
+        perror("dbus_handler_dispatch");
+    }
+}
+
 static void handle_ac(BinaryIo *io, int ac_fd)
 {
     int online;
@@ -123,9 +132,11 @@ int main(int argc, char **argv)
 {
     const char *ledger_path = NULL;
     BinaryIo *io = NULL;
+    DbusHandler *dbus = NULL;
     int epfd = -1;
     int tfd = -1;
     int ac_fd = -1;
+    int dbus_fd = -1;
     int opt;
     int running = 1;
 
@@ -181,6 +192,18 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
+    if (dbus_handler_init(&dbus) == 0) {
+        dbus_fd = dbus_handler_get_fd(dbus);
+        if (dbus_fd < 0 || add_epoll_fd(epfd, dbus_fd, FD_KIND_DBUS) != 0) {
+            perror("epoll_ctl DBUS");
+            dbus_handler_shutdown(dbus, epfd);
+            dbus = NULL;
+            dbus_fd = -1;
+        }
+    } else {
+        fprintf(stderr, "warning: D-Bus sleep tracking disabled\n");
+    }
+
     while (running) {
         struct epoll_event events[8];
         int nready;
@@ -203,10 +226,19 @@ int main(int argc, char **argv)
             case FD_KIND_AC:
                 handle_ac(io, ac_fd);
                 break;
+            case FD_KIND_DBUS:
+                if (dbus != NULL) {
+                    handle_dbus(dbus, io);
+                }
+                break;
             default:
                 break;
             }
         }
+    }
+
+    if (dbus != NULL) {
+        dbus_handler_shutdown(dbus, epfd);
     }
 
     binary_io_close(io);
