@@ -1,0 +1,17 @@
+# Build outputs
+/bin/
+*.o
+*.a
+
+# Local test artifacts
+/tmp/
+/mock_sys/
+
+# Debug / profiling
+*.dSYM/
+vgcore.*
+core
+
+# Editor swap files
+*~
+*.swp
